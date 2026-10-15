@@ -424,6 +424,38 @@ def test_a_config_resolved_effort_never_overrides_the_sessions_launch_policy(mak
     assert agent.reasoning_config == {"enabled": True, "effort": "none"}
 
 
+def test_model_switch_is_the_fenced_gateway_model_mutation(make_agent):
+    """``/model`` on a gateway-backed CLI (main calls ``agent.switch_model``): the pick commits as the
+    generation-fenced ``session.mutate model`` — the canonical path the TUI/GUI pickers use — and
+    main's credential/capability args never cross the wire (the gateway re-resolves them itself)."""
+    agent, client = make_agent([])
+    agent.switch_model(new_model="deepseek-v4-flash", new_provider="deepseek", api_key="sk-do-not-leak",
+                       base_url="https://api.deepseek.com/v1", api_mode="chat", capabilities={"vision": True})
+    mut = [p for m, p in client.calls if m == "session.mutate"]
+    assert len(mut) == 1 and mut[0]["operation"] == "model"
+    assert mut[0]["payload"] == {"model": "deepseek-v4-flash", "provider": "deepseek"}
+    # A policy mutation without the revision/generation it was read at is refused by the owner.
+    assert mut[0]["expected_revision"] == 1 and mut[0]["expected_generation"] == 7
+    assert "sk-do-not-leak" not in str(client.calls)
+    assert agent.model == "deepseek-v4-flash" and agent.provider == "deepseek"
+
+
+def test_model_switch_refusal_raises_so_main_rolls_back(make_agent):
+    """The owner refuses a mutation whose generation moved: the seam must re-raise so main aborts its
+    commit (rolled-back switch = no-op, #50163) instead of reporting a switch that never happened."""
+    agent, client = make_agent([])
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.mutate":
+            raise GatewayClientError("invalid_params: generation moved")
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    with pytest.raises(GatewayClientError):
+        agent.switch_model(new_model="gpt-x", new_provider="openai")
+    assert agent.model == "" and agent.provider == ""  # untouched: main's rollback keeps the old route
+
+
 def test_reasoning_sink_sets_the_sessions_show_reasoning_flag_on_attach_and_toggle(make_agent):
     """Main: a reasoning sink on the agent (show_reasoning, or verbose) makes the agent request and
     stream reasoning. The gateway session gets the same switch at construction and on every toggle."""

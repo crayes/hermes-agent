@@ -450,6 +450,18 @@ class GatewayAgent:
         self._turn_base_usage_anchor = None
         return [{k: v for k, v in m.items() if k != "row_id"} for m in after.get("messages") or []], system_message
 
+    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode='', capabilities=None):
+        """Main's ``/model`` in-place swap seam as the generation-fenced ``session.mutate model`` — the
+        canonical pick path the TUI/GUI pickers use. The gateway session owns the route and re-resolves
+        the selection itself; ``api_key``/``capabilities`` are main's client-rebuild args and never
+        cross the wire. A refusal propagates so main rolls back its staged fields (#50163 semantics)."""
+        snapshot = self.connection.call("session.resume", session_id=self.session_id)
+        self.connection.call("session.mutate", session_id=self.session_id, request_id=uuid.uuid4().hex,
+                             expected_revision=snapshot["revision"],
+                             expected_generation=snapshot["execution_generation"], operation="model",
+                             payload={"model": new_model, "provider": new_provider})
+        self.model, self.provider = new_model, new_provider
+
     def steer(self, text):
         return self._correct("steer", text)
 
